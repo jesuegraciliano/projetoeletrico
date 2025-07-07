@@ -1,0 +1,1556 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Guia de Projeto Elétrico Residencial</title>
+    <!-- Inclui Tailwind CSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Link para o arquivo de estilos customizados -->
+    <link rel="stylesheet" href="style.css">
+    <style>
+        /* Define a fonte Inter para todo o corpo, se não for especificada por Tailwind */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-green-100"> <!-- Fundo verde claro conforme solicitado -->
+    <div id="root">
+        <!-- O aplicativo React será montado aqui -->
+    </div>
+
+    <!-- Inclui React e ReactDOM via CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Inclui Babel para transformar JSX no navegador (apenas para desenvolvimento) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- O código do aplicativo React é incorporado diretamente aqui -->
+    <script type="text/babel">
+        // Utility function to generate unique IDs
+        const generateId = () => Math.random().toString(36).substring(2, 9);
+
+        // Helper functions for NBR 5410 calculations
+        const calculateMinIluminationVA = (area) => {
+          if (area <= 6) {
+            return 100;
+          } else {
+            const remainingArea = area - 6;
+            const additionalVA = Math.floor(remainingArea / 4) * 60;
+            return 100 + additionalVA;
+          }
+        };
+
+        const calculateMinTUGs = (perimeter, roomType) => {
+          let minQuantity = 0;
+          let minVA = 0;
+          let tugsDetails = [];
+
+          switch (roomType) {
+            case 'banheiro':
+              minQuantity = 1;
+              minVA = 600;
+              tugsDetails.push({ va: 600, type: 'lavatorio' });
+              break;
+            case 'cozinha':
+            case 'copa':
+            case 'area_servico':
+            case 'lavanderia':
+            case 'copa_cozinha':
+            case 'analogos': // Locais análogos
+              minQuantity = Math.ceil(perimeter / 3.5);
+              if (minQuantity < 2) minQuantity = 2; // At least two TUGs
+              // Assume at least one above/below countertop. For simplicity, we'll ensure enough TUGs for the perimeter.
+              for (let i = 0; i < minQuantity; i++) {
+                if (i < 3) { // First 3 TUGs are 600 VA
+                  tugsDetails.push({ va: 600, type: 'geral' });
+                  minVA += 600;
+                } else { // Exceeding TUGs are 100 VA
+                  tugsDetails.push({ va: 100, type: 'geral' });
+                  minVA += 100;
+                }
+              }
+              break;
+            case 'varanda':
+            case 'garagem':
+            case 'circulacao':
+            case 'sotao':
+            case 'subsolo':
+              minQuantity = 1;
+              minVA = 100;
+              tugsDetails.push({ va: 100, type: 'geral' });
+              break;
+            default: // Salas, dormitórios, etc.
+              minQuantity = Math.ceil(perimeter / 5);
+              if (minQuantity < 1) minQuantity = 1; // At least one TUG
+              for (let i = 0; i < minQuantity; i++) {
+                tugsDetails.push({ va: 100, type: 'geral' });
+                minVA += 100;
+              }
+              break;
+          }
+          return { minQuantity, minVA, tugsDetails };
+        };
+
+        // Reusable Input Component
+        const FormInput = ({ id, label, type = "text", value, onChange, min, step, placeholder, rows, onBlur }) => (
+          <div className="mb-3">
+            <label htmlFor={id} className="block text-gray-700 text-sm font-bold mb-1">
+              {label}
+            </label>
+            {type === "textarea" ? (
+              <textarea
+                id={id}
+                className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                rows={rows}
+                value={value}
+                onChange={onChange}
+                onBlur={onBlur}
+                placeholder={placeholder}
+              ></textarea>
+            ) : (
+              <input
+                type={type}
+                id={id}
+                className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                value={value}
+                onChange={onChange}
+                onBlur={onBlur}
+                min={min}
+                step={step}
+                placeholder={placeholder}
+              />
+            )}
+          </div>
+        );
+
+        // Reusable Select Component
+        const FormSelect = ({ id, label, value, onChange, options }) => (
+          <div className="mb-3">
+            <label htmlFor={id} className="block text-gray-700 text-sm font-bold mb-1">
+              {label}
+            </label>
+            <select
+              id={id}
+              className="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+              value={value}
+              onChange={onChange}
+            >
+              {options.map(option => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+        );
+
+
+        // Main App Component
+        const App = () => {
+          const [currentStep, setCurrentStep] = React.useState(0);
+          const [projectData, setProjectData] = React.useState({
+            plantaBaixa: {
+              hasPlanta: null,
+              futureNeeds: ""
+            },
+            rooms: [],
+            tues: [], // TUEs not necessarily tied to a specific room (e.g., general outdoor AC)
+            circuits: [],
+            installationDetails: {
+              installationMethod: "B1", // Default to embedded in masonry
+              ambientTemperature: 30 // Default to 30°C
+            },
+            protectionDetails: {
+              includeDPS: false
+            },
+            powerSupply: {
+              concessionaria: "",
+              totalPowerVA: 0,
+              suggestedType: ""
+            },
+            generatedDocuments: {
+              loadTable: "",
+              ownerManual: ""
+            },
+            // For navigation history
+            stepHistory: [0]
+          });
+
+          // Constants for installation methods and temperatures (simplified)
+          const installationMethods = [
+            { value: 'B1', label: 'Eletroduto embutido em alvenaria' },
+            { value: 'B2', label: 'Eletroduto embutido em concreto' },
+            { value: 'C', label: 'Cabo multipolar em eletroduto aparente' },
+            // Add more as needed, but keep it simple for this app
+          ];
+
+          const ambientTemperatures = [
+            { value: 20, label: '20°C' },
+            { value: 25, label: '25°C' },
+            { value: 30, label: '30°C' },
+            { value: 35, label: '35°C' },
+            { value: 40, label: '40°C' },
+          ];
+
+          // Simplified current capacity table (example for Copper, PVC, 3 conductors in eletroduto)
+          // This is a highly simplified example and does not replace NBR 5410 tables.
+          const currentCapacityTable = {
+            '1.5': { 'B1': { 20: 17.5, 25: 16.5, 30: 15.5, 35: 14.5, 40: 13.5 } }, // Amperes
+            '2.5': { 'B1': { 20: 24, 25: 22.5, 30: 21, 35: 19.5, 40: 18 } },
+            '4': { 'B1': { 20: 32, 25: 30, 30: 28, 35: 26, 40: 24 } },
+            '6': { 'B1': { 20: 41, 25: 38, 30: 36, 35: 33, 40: 30 } },
+            '10': { 'B1': { 20: 57, 25: 53, 30: 50, 35: 46, 40: 42 } },
+            // Add other installation methods and temperatures if needed for a more robust app
+          };
+
+          // Simplified eletroduto sizing (example for PVC rigid, 3 or more conductors)
+          // This is a highly simplified example and does not replace specific tables.
+          const eletrodutoSizingTable = {
+            '1.5': { '3+': '1/2"' }, // 3 or more 1.5mm2 conductors -> 1/2" eletroduto
+            '2.5': { '3+': '3/4"' }, // 3 or more 2.5mm2 conductors -> 3/4" eletroduto
+            '4': { '3+': '3/4"' },
+            '6': { '3+': '1"' },
+            '10': { '3+': '1"' },
+            // This table needs to be much more detailed for a real project.
+            // For simplicity, assuming 3+ conductors and picking a common diameter.
+            // In a real app, you'd need to calculate actual cross-sectional areas.
+          };
+
+          const goToNextStep = () => {
+            setCurrentStep(prev => {
+              const newStep = prev + 1;
+              setProjectData(prevData => ({
+                ...prevData,
+                stepHistory: [...prevData.stepHistory, newStep]
+              }));
+              return newStep;
+            });
+          };
+
+          const goToPrevStep = () => {
+            setCurrentStep(prev => {
+              const newStep = prev - 1;
+              setProjectData(prevData => ({
+                ...prevData,
+                stepHistory: prevData.stepHistory.slice(0, prevData.stepHistory.length - 1)
+              }));
+              return newStep;
+            });
+          };
+
+          // Step 1: Planta Baixa
+          const Step1PlantaBaixa = () => (
+            <div className="p-6 bg-white rounded-lg shadow-md">
+              <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 1: Obtenção da Planta Baixa Arquitetônica</h2>
+              <p className="mb-4 text-gray-700">Para iniciar, precisamos da planta baixa arquitetônica da sua residência. Ela serve como base fundamental para todo o projeto elétrico.</p>
+
+              <div className="mb-4">
+                <label className="block text-gray-700 text-sm font-bold mb-2">
+                  Você já possui a planta baixa da residência (em escala 1:50, se possível)?
+                </label>
+                <div className="flex items-center mb-2">
+                  <input
+                    type="radio"
+                    id="hasPlantaYes"
+                    name="hasPlanta"
+                    value="true"
+                    checked={projectData.plantaBaixa.hasPlanta === true}
+                    onChange={() => setProjectData(prev => ({ ...prev, plantaBaixa: { ...prev.plantaBaixa, hasPlanta: true } }))}
+                    className="mr-2"
+                  />
+                  <label htmlFor="hasPlantaYes" className="text-gray-700">Sim</label>
+                </div>
+                <div className="flex items-center">
+                  <input
+                    type="radio"
+                    id="hasPlantaNo"
+                    name="hasPlanta"
+                    value="false"
+                    checked={projectData.plantaBaixa.hasPlanta === false}
+                    onChange={() => setProjectData(prev => ({ ...prev, plantaBaixa: { ...prev.plantaBaixa, hasPlanta: false } }))}
+                    className="mr-2"
+                  />
+                  <label htmlFor="hasPlantaNo" className="text-gray-700">Não</label>
+                </div>
+                {projectData.plantaBaixa.hasPlanta === false && (
+                  <p className="text-red-500 text-sm mt-2">Você precisará providenciar uma planta baixa para continuar. Este é o ponto de partida indispensável para qualquer projeto elétrico.</p>
+                )}
+              </div>
+
+              <FormInput
+                id="futureNeeds"
+                label="Quais são suas expectativas e a funcionalidade desejada para a instalação elétrica? Há algum equipamento específico que você planeja instalar no futuro (ex: ar condicionado, freezer, TV a cabo, rede de computador, telefone), para o qual devemos reservar espaço?"
+                type="textarea"
+                rows="4"
+                value={projectData.plantaBaixa.futureNeeds}
+                onChange={(e) => setProjectData(prev => ({ ...prev, plantaBaixa: { ...prev.plantaBaixa, futureNeeds: e.target.value } }))}
+              />
+            </div>
+          );
+
+          // Step 2: Levantamento de Cargas de Iluminação
+          const Step2Iluminacao = () => {
+            const addRoom = () => {
+              setProjectData(prev => ({
+                ...prev,
+                rooms: [...prev.rooms, { id: generateId(), name: '', area: '', perimeter: '', type: '', iluminacao: {}, tugs: {}, tues: [] }]
+              }));
+            };
+
+            const updateRoom = (id, field, value) => {
+              setProjectData(prev => {
+                const updatedRooms = prev.rooms.map(room => {
+                  if (room.id === id) {
+                    const updatedRoom = { ...room, [field]: value };
+                    if (field === 'area' && value !== '') {
+                      updatedRoom.iluminacao.minVA = calculateMinIluminationVA(parseFloat(value));
+                      updatedRoom.iluminacao.userVA = updatedRoom.iluminacao.minVA; // Initialize userVA with minVA
+                      updatedRoom.iluminacao.points = 1; // Default to 1 point
+                    }
+                    return updatedRoom;
+                  }
+                  return room;
+                });
+                return { ...prev, rooms: updatedRooms };
+              });
+            };
+
+            const updateIlumination = (roomId, field, value) => {
+              setProjectData(prev => {
+                const updatedRooms = prev.rooms.map(room => {
+                  if (room.id === roomId) {
+                    return { ...room, iluminacao: { ...room.iluminacao, [field]: value } };
+                  }
+                  return room;
+                });
+                return { ...prev, rooms: updatedRooms };
+              });
+            };
+
+            const removeRoom = (id) => {
+              setProjectData(prev => ({
+                ...prev,
+                rooms: prev.rooms.filter(room => room.id !== id)
+              }));
+            };
+
+            return (
+              <div className="p-6 bg-white rounded-lg shadow-md">
+                <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 2: Levantamento de Cargas de Iluminação</h2>
+                <p className="mb-4 text-gray-700">Vamos determinar as cargas mínimas de iluminação para cada cômodo com base na NBR 5410.</p>
+
+                {projectData.rooms.map((room, index) => (
+                  <div key={room.id} className="border border-gray-300 rounded-lg p-4 mb-4 bg-gray-50">
+                    <div className="flex justify-between items-center mb-2">
+                      <h3 className="text-xl font-semibold text-gray-700">Cômodo {index + 1}</h3>
+                      <button
+                        onClick={() => removeRoom(room.id)}
+                        className="bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded-full text-sm"
+                      >
+                        Remover
+                      </button>
+                    </div>
+                    <FormInput
+                      id={`roomName-${room.id}`}
+                      label="Nome do Cômodo:"
+                      value={room.name}
+                      onChange={(e) => updateRoom(room.id, 'name', e.target.value)}
+                    />
+                    <FormInput
+                      id={`roomArea-${room.id}`}
+                      label="Área em m²:"
+                      type="number"
+                      value={room.area}
+                      onChange={(e) => updateRoom(room.id, 'area', e.target.value)}
+                      min="0"
+                      step="0.1"
+                    />
+                    {room.iluminacao.minVA !== undefined && (
+                      <div className="mb-3">
+                        <p className="text-gray-700 text-sm">
+                          Carga Mínima de Iluminação (NBR 5410): <span className="font-semibold">{room.iluminacao.minVA} VA</span>
+                        </p>
+                        <FormInput
+                          id={`userIluminationVA-${room.id}`}
+                          label="Potência de Iluminação Desejada (VA):"
+                          type="number"
+                          value={room.iluminacao.userVA}
+                          onChange={(e) => updateIlumination(room.id, 'userVA', parseFloat(e.target.value))}
+                          min={room.iluminacao.minVA}
+                          step="10"
+                        />
+                        <FormInput
+                          id={`userIluminationPoints-${room.id}`}
+                          label="Quantidade de Pontos de Luz:"
+                          type="number"
+                          value={room.iluminacao.points}
+                          onChange={(e) => updateIlumination(room.id, 'points', parseInt(e.target.value))}
+                          min="1"
+                          step="1"
+                        />
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <button
+                  onClick={addRoom}
+                  className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-full focus:outline-none focus:shadow-outline"
+                >
+                  Adicionar Cômodo
+                </button>
+              </div>
+            );
+          };
+
+          // Step 3: Levantamento de Cargas de Tomadas de Uso Geral (TUGs)
+          const Step3TUGs = () => {
+            const updateRoomTUGs = (id, field, value) => {
+              setProjectData(prev => {
+                const updatedRooms = prev.rooms.map(room => {
+                  if (room.id === id) {
+                    const updatedRoom = { ...room, [field]: value };
+                    if (field === 'perimeter' && value !== '' && updatedRoom.type !== '') {
+                      const { minQuantity, minVA } = calculateMinTUGs(parseFloat(value), updatedRoom.type);
+                      updatedRoom.tugs.minQuantity = minQuantity;
+                      updatedRoom.tugs.minVA = minVA;
+                      updatedRoom.tugs.userQuantity = minQuantity; // Initialize user quantity
+                      updatedRoom.tugs.userVA = minVA; // Initialize user VA
+                    }
+                    if (field === 'type' && value !== '' && updatedRoom.perimeter !== '') {
+                      const { minQuantity, minVA } = calculateMinTUGs(parseFloat(updatedRoom.perimeter), value);
+                      updatedRoom.tugs.minQuantity = minQuantity;
+                      updatedRoom.tugs.minVA = minVA;
+                      updatedRoom.tugs.userQuantity = minQuantity;
+                      updatedRoom.tugs.userVA = minVA;
+                    }
+                    return updatedRoom;
+                  }
+                  return room;
+                });
+                return { ...prev, rooms: updatedRooms };
+              });
+            };
+
+            const updateUserTUGs = (roomId, field, value) => {
+              setProjectData(prev => {
+                const updatedRooms = prev.rooms.map(room => {
+                  if (room.id === roomId) {
+                    return { ...room, tugs: { ...room.tugs, [field]: value } };
+                  }
+                  return room;
+                });
+                return { ...prev, rooms: updatedRooms };
+              });
+            };
+
+            const roomTypeOptions = [
+              { value: "", label: "Selecione" },
+              { value: "banheiro", label: "Banheiro" },
+              { value: "cozinha", label: "Cozinha" },
+              { value: "copa", label: "Copa" },
+              { value: "area_servico", label: "Área de Serviço" },
+              { value: "lavanderia", label: "Lavanderia" },
+              { value: "copa_cozinha", label: "Copa-Cozinha" },
+              { value: "analogos", label: "Locais Análogos (ex: despensa, depósito)" },
+              { value: "sala", label: "Sala" },
+              { value: "dormitorio", label: "Dormitório" },
+              { value: "varanda", label: "Varanda" },
+              { value: "garagem", label: "Garagem" },
+              { value: "circulacao", label: "Circulação" },
+              { value: "sotao", label: "Sótão" },
+              { value: "subsolo", label: "Subsolo" },
+              { value: "outros", label: "Outros" },
+            ];
+
+            return (
+              <div className="p-6 bg-white rounded-lg shadow-md">
+                <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 3: Levantamento de Cargas de Tomadas de Uso Geral (TUGs)</h2>
+                <p className="mb-4 text-gray-700">Vamos definir as Tomadas de Uso Geral (TUGs) para cada cômodo com base na NBR 5410.</p>
+
+                {projectData.rooms.map((room, index) => (
+                  <div key={room.id} className="border border-gray-300 rounded-lg p-4 mb-4 bg-gray-50">
+                    <h3 className="text-xl font-semibold mb-2 text-gray-700">{room.name || `Cômodo ${index + 1}`}</h3>
+                    <FormSelect
+                      id={`roomType-${room.id}`}
+                      label="Tipo de Cômodo:"
+                      value={room.type}
+                      onChange={(e) => updateRoomTUGs(room.id, 'type', e.target.value)}
+                      options={roomTypeOptions}
+                    />
+                    <FormInput
+                      id={`roomPerimeter-${room.id}`}
+                      label="Perímetro em metros:"
+                      type="number"
+                      value={room.perimeter}
+                      onChange={(e) => updateRoomTUGs(room.id, 'perimeter', e.target.value)}
+                      min="0"
+                      step="0.1"
+                    />
+                    {room.tugs.minQuantity !== undefined && (
+                      <div className="mb-3">
+                        <p className="text-gray-700 text-sm">
+                          Quantidade Mínima de TUGs (NBR 5410): <span className="font-semibold">{room.tugs.minQuantity}</span>
+                        </p>
+                        <p className="text-gray-700 text-sm">
+                          Potência Mínima de TUGs (NBR 5410): <span className="font-semibold">{room.tugs.minVA} VA</span>
+                        </p>
+                        <FormInput
+                          id={`userTUGsQuantity-${room.id}`}
+                          label="Quantidade de TUGs Desejada:"
+                          type="number"
+                          value={room.tugs.userQuantity}
+                          onChange={(e) => updateUserTUGs(room.id, 'userQuantity', parseInt(e.target.value))}
+                          min={room.tugs.minQuantity}
+                          step="1"
+                        />
+                        <FormInput
+                          id={`userTUGsVA-${room.id}`}
+                          label="Potência Total de TUGs Desejada (VA):"
+                          type="number"
+                          value={room.tugs.userVA}
+                          onChange={(e) => updateUserTUGs(room.id, 'userVA', parseFloat(e.target.value))}
+                          min={room.tugs.minVA}
+                          step="10"
+                        />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            );
+          };
+
+          // Step 4: Levantamento de Cargas de Tomadas de Uso Específico (TUEs)
+          const Step4TUEs = () => {
+            const addTUE = () => {
+              setProjectData(prev => ({
+                ...prev,
+                tues: [...prev.tues, { id: generateId(), name: '', power: '', voltage: '' }]
+              }));
+            };
+
+            const updateTUE = (id, field, value) => {
+              setProjectData(prev => {
+                const updatedTUEs = prev.tues.map(tue => {
+                  if (tue.id === id) {
+                    return { ...tue, [field]: value };
+                  }
+                  return tue;
+                });
+                return { ...prev, tues: updatedTUEs };
+              });
+            };
+
+            const removeTUE = (id) => {
+              setProjectData(prev => ({
+                ...prev,
+                tues: prev.tues.filter(tue => tue.id !== id)
+              }));
+            };
+
+            return (
+              <div className="p-6 bg-white rounded-lg shadow-md">
+                <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 4: Levantamento de Cargas de Tomadas de Uso Específico (TUEs)</h2>
+                <p className="mb-4 text-gray-700">Equipamentos de alta potência devem ter circuitos exclusivos. Informe-os aqui.</p>
+
+                {projectData.tues.map((tue, index) => (
+                  <div key={tue.id} className="border border-gray-300 rounded-lg p-4 mb-4 bg-gray-50">
+                    <div className="flex justify-between items-center mb-2">
+                      <h3 className="text-xl font-semibold text-gray-700">TUE {index + 1}</h3>
+                      <button
+                        onClick={() => removeTUE(tue.id)}
+                        className="bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded-full text-sm"
+                      >
+                        Remover
+                      </button>
+                    </div>
+                    <FormInput
+                      id={`tueName-${tue.id}`}
+                      label="Nome do Equipamento (ex: Chuveiro Elétrico, Ar-condicionado):"
+                      value={tue.name}
+                      onChange={(e) => updateTUE(tue.id, 'name', e.target.value)}
+                    />
+                    <FormInput
+                      id={`tuePower-${tue.id}`}
+                      label="Potência Nominal (VA ou W):"
+                      type="number"
+                      value={tue.power}
+                      onChange={(e) => updateTUE(tue.id, 'power', parseFloat(e.target.value))}
+                      min="0"
+                      step="100"
+                    />
+                    <FormInput
+                      id={`tueVoltage-${tue.id}`}
+                      label="Tensão Nominal (V):"
+                      type="number"
+                      value={tue.voltage}
+                      onChange={(e) => updateTUE(tue.id, 'voltage', parseFloat(e.target.value))}
+                      min="0"
+                      step="1"
+                    />
+                  </div>
+                ))}
+                <button
+                  onClick={addTUE}
+                  className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-full focus:outline-none focus:shadow-outline"
+                >
+                  Adicionar TUE
+                </button>
+              </div>
+            );
+          };
+
+          // Step 5: Divisão da Instalação em Circuitos
+          const Step5Circuitos = () => {
+            // Combine all loads for circuit creation
+            const allLoads = [];
+            projectData.rooms.forEach(room => {
+              if (room.iluminacao.userVA > 0) {
+                allLoads.push({
+                  id: generateId(),
+                  name: `Iluminação ${room.name}`,
+                  type: 'iluminacao',
+                  power: room.iluminacao.userVA,
+                  voltage: 127, // Assuming 127V for lighting for simplicity
+                  roomId: room.id,
+                  points: room.iluminacao.points
+                });
+              }
+              if (room.tugs.userVA > 0) {
+                allLoads.push({
+                  id: generateId(),
+                  name: `TUGs ${room.name}`,
+                  type: 'tug',
+                  power: room.tugs.userVA,
+                  voltage: 127, // Assuming 127V for TUGs for simplicity
+                  roomId: room.id,
+                  quantity: room.tugs.userQuantity
+                });
+              }
+            });
+            projectData.tues.forEach(tue => {
+              allLoads.push({
+                id: generateId(),
+                name: tue.name,
+                type: 'tue',
+                power: tue.power,
+                voltage: tue.voltage,
+                tueId: tue.id
+              });
+            });
+
+            React.useEffect(() => {
+              // Initialize circuits based on TUEs and suggest for others
+              if (projectData.circuits.length === 0 && allLoads.length > 0) {
+                let initialCircuits = [];
+                let remainingLoads = [...allLoads];
+
+                // Add TUEs as separate circuits
+                remainingLoads = remainingLoads.filter(load => {
+                  if (load.type === 'tue' || (load.type === 'tug' && load.power / load.voltage > 10)) { // TUEs or TUGs > 10A
+                    initialCircuits.push({
+                      id: generateId(),
+                      name: `Circuito ${load.name}`,
+                      loads: [load],
+                      totalVA: load.power,
+                      voltage: load.voltage,
+                      current: load.power / load.voltage,
+                      suggestedConductorSection: '', // To be calculated later
+                      suggestedBreaker: '', // To be calculated later
+                      hasDR: false, // To be determined later
+                      isExclusive: true
+                    });
+                    return false; // Remove from remaining loads
+                  }
+                  return true;
+                });
+
+                // Group remaining illumination and TUGs
+                let currentCircuitPower = 0;
+                let currentCircuitLoads = [];
+                let circuitCounter = initialCircuits.length + 1;
+
+                remainingLoads.forEach(load => {
+                  // NBR 5410 recommends limiting current to 10A for ilum/TUGs.
+                  // 1270 VA @ 127V or 2200 VA @ 220V
+                  const maxPowerFor10A = load.voltage === 127 ? 1270 : 2200;
+
+                  if (currentCircuitPower + load.power > maxPowerFor10A || currentCircuitLoads.length > 0 && currentCircuitLoads[0].type !== load.type) {
+                    // If adding this load exceeds 10A limit OR mixing ilum/tug types, start new circuit
+                    if (currentCircuitLoads.length > 0) {
+                      initialCircuits.push({
+                        id: generateId(),
+                        name: `Circuito ${circuitCounter++} - ${currentCircuitLoads[0].type === 'iluminacao' ? 'Iluminação' : 'TUGs'}`,
+                        loads: currentCircuitLoads,
+                        totalVA: currentCircuitPower,
+                        voltage: currentCircuitLoads[0].voltage, // Assuming same voltage for loads in a circuit
+                        current: currentCircuitPower / currentCircuitLoads[0].voltage,
+                        suggestedConductorSection: '',
+                        suggestedBreaker: '',
+                        hasDR: false,
+                        isExclusive: false
+                      });
+                    }
+                    currentCircuitLoads = [load];
+                    currentCircuitPower = load.power;
+                  } else {
+                    currentCircuitLoads.push(load);
+                    currentCircuitPower += load.power;
+                  }
+                });
+
+                // Add the last circuit if any loads remain
+                if (currentCircuitLoads.length > 0) {
+                  initialCircuits.push({
+                    id: generateId(),
+                    name: `Circuito ${circuitCounter++} - ${currentCircuitLoads[0].type === 'iluminacao' ? 'Iluminação' : 'TUGs'}`,
+                    loads: currentCircuitLoads,
+                    totalVA: currentCircuitPower,
+                    voltage: currentCircuitLoads[0].voltage,
+                    current: currentCircuitPower / currentCircuitLoads[0].voltage,
+                    suggestedConductorSection: '',
+                    suggestedBreaker: '',
+                    hasDR: false,
+                    isExclusive: false
+                  });
+                }
+                setProjectData(prev => ({ ...prev, circuits: initialCircuits }));
+              }
+            }, [projectData.rooms, projectData.tues, allLoads.length]); // Added allLoads.length to dependencies for more accurate re-evaluation
+
+            const updateCircuitName = (id, newName) => {
+              setProjectData(prev => ({
+                ...prev,
+                circuits: prev.circuits.map(circuit =>
+                  circuit.id === id ? { ...circuit, name: newName } : circuit
+                )
+              }));
+            };
+
+            return (
+              <div className="p-6 bg-white rounded-lg shadow-md">
+                <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 5: Divisão da Instalação em Circuitos</h2>
+                <p className="mb-4 text-gray-700">A NBR 5410 exige circuitos distintos para iluminação e tomadas. Equipamentos de alta potência devem ter circuitos independentes.</p>
+                <p className="mb-4 text-gray-700">Abaixo, uma sugestão de circuitos baseada nas suas cargas. Você pode ajustar os nomes.</p>
+
+                {projectData.circuits.length === 0 && (
+                  <p className="text-gray-600">Nenhum circuito gerado ainda. Por favor, preencha os passos anteriores.</p>
+                )}
+
+                {projectData.circuits.map((circuit, index) => (
+                  <div key={circuit.id} className="border border-gray-300 rounded-lg p-4 mb-4 bg-gray-50">
+                    <h3 className="text-xl font-semibold mb-2 text-gray-700">Circuito {index + 1}</h3>
+                    <FormInput
+                      id={`circuitName-${circuit.id}`}
+                      label="Nome do Circuito:"
+                      value={circuit.name}
+                      onChange={(e) => updateCircuitName(circuit.id, e.target.value)}
+                    />
+                    <p className="text-gray-700 text-sm">
+                      Tipo: <span className="font-semibold">{circuit.loads.map(l => l.type).join(', ')}</span>
+                    </p>
+                    <p className="text-gray-700 text-sm">
+                      Cargas Atendidas: <span className="font-semibold">{circuit.loads.map(l => l.name).join(', ')}</span>
+                    </p>
+                    <p className="text-gray-700 text-sm">
+                      Potência Total: <span className="font-semibold">{circuit.totalVA} VA</span>
+                    </p>
+                    <p className="text-gray-700 text-sm">
+                      Tensão: <span className="font-semibold">{circuit.voltage} V</span>
+                    </p>
+                    <p className="text-gray-700 text-sm">
+                      Corrente Nominal (aproximada): <span className="font-semibold">{circuit.current.toFixed(2)} A</span>
+                    </p>
+                    {circuit.isExclusive && <p className="text-green-600 text-sm font-medium">Circuito Exclusivo (TUE ou TUG {' > '} 10A)</p>}
+                  </div>
+                ))}
+                {/* Simplified: No manual circuit creation/deletion in this version */}
+              </div>
+            );
+          };
+
+          // Step 6: Marcação dos Pontos e Caminho dos Eletrodutos (Conceptual)
+          const Step6MarcacaoEletrodutos = () => {
+            const [qdLocation, setQdLocation] = React.useState('');
+            const [eletrodutoTracing, setEletrodutoTracing] = React.useState('');
+
+            React.useEffect(() => {
+              // Initialize with previous data if available
+              setQdLocation(projectData.qdLocation || '');
+              setEletrodutoTracing(projectData.eletrodutoTracing || '');
+            }, [projectData.qdLocation, projectData.eletrodutoTracing]);
+
+            const handleSave = () => {
+              setProjectData(prev => ({
+                ...prev,
+                qdLocation,
+                eletrodutoTracing
+              }));
+            };
+
+            return (
+              <div className="p-6 bg-white rounded-lg shadow-md">
+                <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 6: Marcação dos Pontos e Caminho dos Eletrodutos</h2>
+                <p className="mb-4 text-gray-700">Nesta etapa, você posicionaria os pontos de luz, TUGs, TUEs, interruptores e quadros na sua planta, utilizando a simbologia NBR 5444.</p>
+                <p className="mb-4 text-gray-700">O aplicativo não desenha a planta, mas podemos registrar suas decisões conceituais.</p>
+
+                <FormInput
+                  id="qdLocation"
+                  label="Onde você planeja localizar o Quadro de Distribuição (QD) em sua planta? (Ex: Próximo à cozinha, no corredor central)"
+                  type="textarea"
+                  rows="3"
+                  value={qdLocation}
+                  onChange={(e) => setQdLocation(e.target.value)}
+                  onBlur={handleSave}
+                />
+                <FormInput
+                  id="eletrodutoTracing"
+                  label="Você deseja traçar os caminhos dos eletrodutos agora (mentalmente na sua planta), ou prefere que o aplicativo sugira um traçado otimizado após o dimensionamento? (Descreva brevemente sua preferência ou ideia)"
+                  type="textarea"
+                  rows="3"
+                  value={eletrodutoTracing}
+                  onChange={(e) => setEletrodutoTracing(e.target.value)}
+                  onBlur={handleSave}
+                />
+                <p className="text-sm text-gray-600 mt-1">
+                  Lembre-se: caminhos mais curtos, evitar cruzamentos na laje, máx. 5 eletrodutos por caixa de teto, máx. 3 por caixa de parede.
+                </p>
+              </div>
+            );
+          };
+
+          // Step 7: Representação dos Condutores na Planta (Conceptual)
+          const Step7RepresentacaoCondutores = () => {
+            // This step is conceptual for this app. In a real CAD software, you'd draw.
+            // Here, we confirm understanding of conductor types and colors.
+            return (
+              <div className="p-6 bg-white rounded-lg shadow-md">
+                <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 7: Representação dos Condutores na Planta</h2>
+                <p className="mb-4 text-gray-700">Esta etapa é sobre a representação visual dos condutores dentro dos eletrodutos na sua planta.</p>
+                <p className="mb-4 text-gray-700">Lembre-se das cores padrão da NBR 5410:</p>
+                <ul className="list-disc list-inside mb-4 text-gray-700">
+                  <li><span className="font-semibold text-blue-600">Neutro: Azul claro</span> (obrigatoriamente)</li>
+                  <li><span className="font-semibold text-green-600">Terra/Proteção (PE): Verde ou verde/amarelo</span> (obrigatoriamente)</li>
+                  <li><span className="font-semibold text-gray-800">Fase: Preto, vermelho ou amarelo</span> (exceto azul claro, verde ou verde/amarelo)</li>
+                  <li><span className="font-semibold text-gray-600">Retorno: Geralmente branco ou cinza</span></li>
+                </ul>
+                <p className="mb-4 text-gray-700">
+                  Na prática, evite mais de 6 ou 7 condutores por eletroduto para facilitar a instalação.
+                </p>
+                <p className="text-gray-700">
+                  Ao prosseguir, assumimos que você compreende a importância da correta representação e identificação dos condutores.
+                </p>
+              </div>
+            );
+          };
+
+          // Step 8: Dimensionamento de Condutores (Fiação)
+          const Step8DimensionamentoCondutores = () => {
+            const [installationMethod, setInstallationMethod] = React.useState(projectData.installationDetails.installationMethod);
+            const [ambientTemperature, setAmbientTemperature] = React.useState(projectData.installationDetails.ambientTemperature);
+
+            React.useEffect(() => {
+              // Update installation details (this is fine)
+              setProjectData(prev => ({
+                ...prev,
+                installationDetails: { installationMethod, ambientTemperature }
+              }));
+
+              // Recalculate suggested conductor sections for each circuit
+              const newCircuits = projectData.circuits.map(circuit => {
+                let suggestedSection = 0;
+                let current = circuit.current;
+
+                // NBR 5410 Min Sections
+                if (circuit.loads.some(load => load.type === 'iluminacao')) {
+                  suggestedSection = Math.max(suggestedSection, 1.5);
+                }
+                if (circuit.loads.some(load => load.type === 'tug' || load.type === 'tue')) {
+                  suggestedSection = Math.max(suggestedSection, 2.5);
+                }
+
+                // Capacity of Current (Iz) - Simplified lookup
+                const tempFactor = ambientTemperature;
+                let foundCapacitySection = null;
+                
+                // Iterate through sections to find the smallest one that can handle the current
+                for (const sectionKey of Object.keys(currentCapacityTable).sort((a, b) => parseFloat(a) - parseFloat(b))) {
+                  const capacities = currentCapacityTable[sectionKey][installationMethod];
+                  if (capacities && capacities[tempFactor] && current <= capacities[tempFactor]) {
+                    foundCapacitySection = parseFloat(sectionKey);
+                    break;
+                  }
+                }
+
+                if (foundCapacitySection) {
+                  suggestedSection = Math.max(suggestedSection, foundCapacitySection);
+                } else if (current > 0) {
+                  suggestedSection = Math.max(suggestedSection, 10); // Fallback if no matching capacity found
+                }
+
+                // Only update if the suggestedSection actually changes to prevent unnecessary re-renders
+                if (circuit.suggestedConductorSection !== suggestedSection) {
+                  return { ...circuit, suggestedConductorSection: suggestedSection };
+                }
+                return circuit; // Return original circuit if no change
+              });
+
+              // Only update projectData.circuits if any circuit actually changed
+              const hasCircuitChanges = newCircuits.some((newCircuit, index) => newCircuit !== projectData.circuits[index]);
+
+              if (hasCircuitChanges) {
+                setProjectData(prev => ({
+                  ...prev,
+                  circuits: newCircuits
+                }));
+              }
+
+            }, [installationMethod, ambientTemperature, projectData.circuits, projectData.rooms, projectData.tues]); // Depend on inputs, not on the state being updated.
+
+            return (
+              <div className="p-6 bg-white rounded-lg shadow-md">
+                <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 8: Dimensionamento dos Condutores (Fiação)</h2>
+                <p className="mb-4 text-gray-700">Vamos determinar a seção (bitola) dos condutores para cada circuito, considerando segurança e funcionalidade.</p>
+
+                <FormSelect
+                  id="installationMethod"
+                  label="Maneira de Instalação Predominante dos Condutores:"
+                  value={installationMethod}
+                  onChange={(e) => setInstallationMethod(e.target.value)}
+                  options={installationMethods}
+                />
+                <FormSelect
+                  id="ambientTemperature"
+                  label="Temperatura Ambiente Média no Local da Instalação:"
+                  value={ambientTemperature}
+                  onChange={(e) => setAmbientTemperature(parseFloat(e.target.value))}
+                  options={ambientTemperatures}
+                />
+
+                <h3 className="text-xl font-semibold mb-3 text-gray-800">Seções Sugeridas por Circuito:</h3>
+                {projectData.circuits.map(circuit => (
+                  <div key={circuit.id} className="border border-gray-200 rounded-lg p-3 mb-3 bg-gray-50">
+                    <p className="font-medium text-gray-700">{circuit.name}:</p>
+                    <p className="text-sm text-gray-600">Corrente: {circuit.current.toFixed(2)} A</p>
+                    <p className="text-sm text-gray-600">
+                      Seção Mínima (NBR 5410): {circuit.loads.some(l => l.type === 'iluminacao') ? '1.5 mm²' : '2.5 mm²'}
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      Seção Sugerida (Capacidade de Corrente): <span className="font-bold text-green-700">{circuit.suggestedConductorSection} mm²</span>
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      <span className="font-semibold">Nota sobre Queda de Tensão:</span> A NBR 5410 limita a queda de tensão a 4% para circuitos terminais. Este cálculo requer o comprimento exato dos fios e é complexo para este aplicativo. Certifique-se de que a seção escolhida também atenda a este critério em um projeto profissional.
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      Condutor de Proteção (Terra): Para seções menores que 16 mm², deve ter a mesma seção do condutor fase. Mínimo 2.5 mm².
+                    </p>
+                  </div>
+                ))}
+              </div>
+            );
+          };
+
+          // Step 9: Dimensionamento dos Eletrodutos
+          const Step9DimensionamentoEletrodutos = () => {
+            React.useEffect(() => {
+              setProjectData(prev => {
+                const updatedCircuits = prev.circuits.map(circuit => {
+                  const numConductors = circuit.voltage === 127 ? 3 : 2; // Simplified: Phase, Neutral, Earth (127V) or 2 Phases, Earth (220V)
+                  const maxSection = circuit.suggestedConductorSection;
+                  let suggestedDiameter = '1/2"'; // Default
+
+                  if (maxSection && eletrodutoSizingTable[maxSection]) {
+                    suggestedDiameter = eletrodutoSizingTable[maxSection]['3+'] || suggestedDiameter;
+                  }
+
+                  return { ...circuit, suggestedEletrodutoDiameter: suggestedDiameter, numConductors };
+                });
+                return { ...prev, circuits: updatedCircuits };
+              });
+            }, [projectData.circuits.length, projectData.circuits]); // Added projectData.circuits to dependencies
+
+            return (
+              <div className="p-6 bg-white rounded-lg shadow-md">
+                <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 9: Dimensionamento dos Eletrodutos</h2>
+                <p className="mb-4 text-gray-700">Os eletrodutos protegem os condutores. O dimensionamento correto permite a fácil instalação e remoção dos fios.</p>
+                <p className="mb-4 text-gray-700">A taxa de ocupação do eletroduto pelos condutores não deve ser superior a 40% para três ou mais condutores.</p>
+
+                <h3 className="text-xl font-semibold mb-3 text-gray-800">Diâmetros Sugeridos por Circuito:</h3>
+                {projectData.circuits.map(circuit => (
+                  <div key={circuit.id} className="border border-gray-200 rounded-lg p-3 mb-3 bg-gray-50">
+                    <p className="font-medium text-gray-700">{circuit.name}:</p>
+                    <p className="text-sm text-gray-600">Seção do Condutor Sugerida: {circuit.suggestedConductorSection} mm²</p>
+                    <p className="text-sm text-gray-600">Número de Condutores (aprox.): {circuit.numConductors}</p>
+                    <p className="text-sm text-gray-600">
+                      Diâmetro Sugerido do Eletroduto: <span className="font-bold text-green-700">{circuit.suggestedEletrodutoDiameter}</span>
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      <span className="font-semibold">Nota:</span> É prudente prever diâmetros ligeiramente acima para futuras ampliações.
+                    </p>
+                  </div>
+                ))}
+              </div>
+            );
+          };
+
+          // Step 10: Dimensionamento dos Dispositivos de Proteção
+          const Step10DispositivosProtecao = () => {
+            const updateCircuitProtection = (id, field, value) => {
+              setProjectData(prev => ({
+                ...prev,
+                circuits: prev.circuits.map(circuit =>
+                  circuit.id === id ? { ...circuit, [field]: value } : circuit
+                )
+              }));
+            };
+
+            const handleDPSChange = (e) => {
+              setProjectData(prev => ({
+                ...prev,
+                protectionDetails: { ...prev.protectionDetails, includeDPS: e.target.checked }
+              }));
+            };
+
+            React.useEffect(() => {
+              // Suggest breaker size and DR based on circuit data
+              setProjectData(prev => {
+                const updatedCircuits = prev.circuits.map(circuit => {
+                  let suggestedBreaker = 0;
+                  const current = circuit.current;
+                  const conductorSection = circuit.suggestedConductorSection;
+
+                  // Simplified breaker sizing: pick nearest standard size >= current, and <= conductor capacity
+                  // Standard breaker sizes: 10, 15, 20, 25, 32, 40, 50, 63 A
+                  const standardBreakers = [10, 15, 20, 25, 32, 40, 50, 63];
+                  for (let size of standardBreakers) {
+                    if (current <= size) {
+                      // Also check if breaker is <= conductor capacity
+                      const conductorCapacity = currentCapacityTable[conductorSection]?.[projectData.installationDetails.installationMethod]?.[projectData.installationDetails.ambientTemperature];
+                      if (conductorCapacity && size <= conductorCapacity) {
+                        suggestedBreaker = size;
+                        break;
+                      }
+                    }
+                  }
+                  if (suggestedBreaker === 0 && current > 0) { // Fallback for very high currents
+                    suggestedBreaker = Math.ceil(current / 5) * 5; // Round up to nearest 5
+                  }
+
+                  // DR requirement based on NBR 5410
+                  let hasDR = false;
+                  const roomTypesRequiringDR = ['banheiro', 'cozinha', 'copa', 'area_servico', 'lavanderia', 'copa_cozinha', 'analogos', 'varanda', 'garagem'];
+                  const isRoomRequiringDR = circuit.loads.some(load =>
+                    load.roomId && projectData.rooms.find(r => r.id === load.roomId && roomTypesRequiringDR.includes(r.type))
+                  );
+                  const isExternalTUG = circuit.loads.some(load => load.type === 'tug' && load.name.includes('externa')); // Placeholder for external TUGs
+                  const isShowerOrBathtub = circuit.loads.some(load => load.name.toLowerCase().includes('chuveiro') || load.name.toLowerCase().includes('banheira'));
+
+                  if (isRoomRequiringDR || isExternalTUG || isShowerOrBathtub) {
+                    hasDR = true;
+                  }
+
+                  return { ...circuit, suggestedBreaker, hasDR };
+                });
+                return { ...prev, circuits: updatedCircuits };
+              });
+            }, [projectData.circuits, projectData.rooms, projectData.installationDetails]); // Recalculate if these change
+
+            return (
+              <div className="p-6 bg-white rounded-lg shadow-md">
+                <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 10: Dimensionamento dos Dispositivos de Proteção</h2>
+                <p className="mb-4 text-gray-700">A segurança da instalação e dos usuários depende da escolha correta de disjuntores e DRs.</p>
+
+                <h3 className="text-xl font-semibold mb-3 text-gray-800">Sugestões de Disjuntores e DRs por Circuito:</h3>
+                {projectData.circuits.map(circuit => (
+                  <div key={circuit.id} className="border border-gray-200 rounded-lg p-3 mb-3 bg-gray-50">
+                    <p className="font-medium text-gray-700">{circuit.name}:</p>
+                    <p className="text-sm text-gray-600">Corrente Nominal (aprox.): {circuit.current.toFixed(2)} A</p>
+                    <p className="text-sm text-gray-600">Seção do Condutor Sugerida: {circuit.suggestedConductorSection} mm²</p>
+                    <p className="text-sm text-gray-600">
+                      Disjuntor Sugerido: <span className="font-bold text-green-700">{circuit.suggestedBreaker} A</span>
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      Tipo de Disjuntor: {circuit.voltage === 127 ? 'Monopolar' : 'Bipolar'}
+                    </p>
+                    <div className="flex items-center mt-2">
+                      <input
+                        type="checkbox"
+                        id={`hasDR-${circuit.id}`}
+                        checked={circuit.hasDR}
+                        onChange={(e) => updateCircuitProtection(circuit.id, 'hasDR', e.target.checked)}
+                        className="mr-2"
+                      />
+                      <label htmlFor={`hasDR-${circuit.id}`} className="text-gray-700 text-sm">
+                        Incluir Dispositivo Diferencial-Residual (DR 30mA) - <span className="font-semibold text-red-600">OBRIGATÓRIO para proteção de pessoas em áreas molhadas/externas.</span>
+                      </label>
+                    </div>
+                    {circuit.hasDR && (
+                      <p className="text-sm text-gray-600 mt-1">
+                        <span className="font-semibold">Importante:</span> NUNCA desative ou remova o dispositivo DR.
+                      </p>
+                    )}
+                    <p className="text-sm text-red-600 mt-1 font-semibold">
+                      Advertência: NUNCA troque disjuntores por outros de maior corrente sem antes trocar os fios por maior seção.
+                    </p>
+                  </div>
+                ))}
+
+                <div className="mt-6 border-t pt-4">
+                  <label className="flex items-center text-gray-700 text-sm font-bold mb-2">
+                    <input
+                      type="checkbox"
+                      checked={projectData.protectionDetails.includeDPS}
+                      onChange={handleDPSChange}
+                      className="mr-2"
+                    />
+                    Deseja incluir Dispositivos de Proteção contra Surtos (DPS) no Quadro de Distribuição principal?
+                  </label>
+                  <p className="text-sm text-gray-600">
+                    (Recomendado para proteger equipamentos sensíveis, mesmo não sendo obrigatório pela NBR 5410 para residências comuns).
+                  </p>
+                </div>
+              </div>
+            );
+          };
+
+          // Step 11: Aterramento (Fio Terra) - Conceptual
+          const Step11Aterramento = () => (
+            <div className="p-6 bg-white rounded-lg shadow-md">
+              <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 11: Aterramento (Fio Terra)</h2>
+              <p className="mb-4 text-gray-700">O aterramento é um sistema de proteção fundamental para garantir a segurança do usuário contra choques elétricos e proteger equipamentos.</p>
+              <p className="mb-4 text-gray-700">
+                Ele interliga as partes metálicas da instalação (tomadas, caixas, tubulações, quadros, luminárias) com o solo, estabelecendo um referencial de potencial zero.
+              </p>
+              <p className="mb-4 text-gray-700 font-semibold">
+                Todas as tomadas da instalação residencial devem possuir fio terra, que deve ser constituído por um condutor encapado na cor <span className="text-green-600">verde ou verde-amarelo</span> (obrigatoriamente).
+              </p>
+              <p className="text-red-600 font-bold">
+                A falta do condutor de proteção (fio terra) significa risco de choque elétrico e perda humana.
+              </p>
+              <p className="mt-4 text-gray-700">
+                Ao prosseguir, assumimos que você compreende a importância vital do aterramento e que ele será implementado corretamente em todos os pontos necessários.
+              </p>
+            </div>
+          );
+
+          // Step 12: Definição do Tipo de Fornecimento e Padrão de Entrada
+          const Step12Fornecimento = () => {
+            const [concessionaria, setConcessionaria] = React.useState(projectData.powerSupply.concessionaria);
+            const [suggestedType, setSuggestedType] = React.useState(projectData.powerSupply.suggestedType);
+
+            React.useEffect(() => {
+              // Calculate total power
+              let totalPowerVA = 0;
+              projectData.rooms.forEach(room => {
+                totalPowerVA += room.iluminacao.userVA || 0;
+                totalPowerVA += room.tugs.userVA || 0;
+              });
+              projectData.tues.forEach(tue => {
+                totalPowerVA += tue.power || 0;
+              });
+
+              // Suggest supply type (simplified)
+              let calculatedSuggestedType = "Monofásico";
+              if (totalPowerVA > 13000) { // 13 kW
+                calculatedSuggestedType = "Bifásico";
+              }
+              if (totalPowerVA > 25000) { // Example threshold, varies by concessionaire
+                calculatedSuggestedType = "Trifásico";
+              }
+
+              setProjectData(prev => ({
+                ...prev,
+                powerSupply: {
+                  ...prev.powerSupply,
+                  totalPowerVA: totalPowerVA,
+                  suggestedType: calculatedSuggestedType
+                }
+              }));
+              setSuggestedType(calculatedSuggestedType);
+            }, [projectData.rooms, projectData.tues]);
+
+            const handleSave = () => {
+              setProjectData(prev => ({
+                ...prev,
+                powerSupply: { ...prev.powerSupply, concessionaria }
+              }));
+            };
+
+            return (
+              <div className="p-6 bg-white rounded-lg shadow-md">
+                <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 12: Definição do Tipo de Fornecimento e Padrão de Entrada</h2>
+                <p className="mb-4 text-gray-700">Com base na potência total da sua residência, determinamos o tipo de fornecimento necessário.</p>
+
+                <div className="mb-4">
+                  <p className="text-gray-700 text-lg font-semibold">
+                    Potência Total Instalada Estimada: <span className="text-blue-700">{projectData.powerSupply.totalPowerVA} VA</span> ({projectData.powerSupply.totalPowerVA / 1000} kW)
+                  </p>
+                  <p className="text-gray-700 text-lg font-semibold">
+                    Tipo de Fornecimento Sugerido: <span className="text-blue-700">{suggestedType}</span>
+                  </p>
+                  <p className="text-sm text-gray-600 mt-1">
+                    (Estes valores são estimativas e podem variar conforme a concessionária de energia da sua região.)
+                  </p>
+                </div>
+
+                <FormInput
+                  id="concessionaria"
+                  label="Qual é a concessionária de energia elétrica da sua região?"
+                  value={concessionaria}
+                  onChange={(e) => setConcessionaria(e.target.value)}
+                  onBlur={handleSave}
+                />
+                <p className="text-sm text-gray-600 mt-1">
+                  As normas específicas para o padrão de entrada devem ser obtidas junto à concessionária local.
+                </p>
+              </div>
+            );
+          };
+
+          // Step 13: Elaboração do Quadro de Cargas e Diagramas
+          const Step13QuadroDiagramas = () => {
+            React.useEffect(() => {
+              // Generate load table content
+              let loadTableContent = `
+                <h3 class="text-xl font-bold mb-2">Quadro de Cargas</h3>
+                <table class="min-w-full bg-white border border-gray-300 rounded-lg">
+                  <thead>
+                    <tr>
+                      <th class="py-2 px-4 border-b">Circuito</th>
+                      <th class="py-2 px-4 border-b">Finalidade/Cargas</th>
+                      <th class="py-2 px-4 border-b">Potência (VA)</th>
+                      <th class="py-2 px-4 border-b">Tensão (V)</th>
+                      <th class="py-2 px-4 border-b">Corrente (A)</th>
+                      <th class="py-2 px-4 border-b">Seção Condutor (mm²)</th>
+                      <th class="py-2 px-4 border-b">Disjuntor (A)</th>
+                      <th class="py-2 px-4 border-b">DR</th>
+                      <th class="py-2 px-4 border-b">Eletroduto</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+              `;
+              projectData.circuits.forEach((circuit, index) => {
+                loadTableContent += `
+                  <tr>
+                    <td class="py-2 px-4 border-b">${circuit.name}</td>
+                    <td class="py-2 px-4 border-b">${circuit.loads.map(l => l.name).join(', ')}</td>
+                    <td class="py-2 px-4 border-b">${circuit.totalVA}</td>
+                    <td class="py-2 px-4 border-b">${circuit.voltage}</td>
+                    <td class="py-2 px-4 border-b">${circuit.current.toFixed(2)}</td>
+                    <td class="py-2 px-4 border-b">${circuit.suggestedConductorSection}</td>
+                    <td class="py-2 px-4 border-b">${circuit.suggestedBreaker}</td>
+                    <td class="py-2 px-4 border-b">${circuit.hasDR ? 'Sim' : 'Não'}</td>
+                    <td class="py-2 px-4 border-b">${circuit.suggestedEletrodutoDiameter || 'N/A'}</td>
+                  </tr>
+                `;
+              });
+              loadTableContent += `
+                  </tbody>
+                </table>
+                <p class="mt-4 text-sm text-gray-600">
+                  Nota: Este é um quadro de cargas simplificado. Um projeto profissional incluiria mais detalhes como fator de demanda, tipo de disjuntor (curva), etc.
+                </p>
+              `;
+
+              // Update projectData with generated content
+              setProjectData(prev => ({
+                ...prev,
+                generatedDocuments: {
+                  ...prev.generatedDocuments,
+                  loadTable: loadTableContent
+                }
+              }));
+            }, [projectData.circuits]);
+
+            return (
+              <div className="p-6 bg-white rounded-lg shadow-md">
+                <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 13: Elaboração do Quadro de Cargas e Diagramas</h2>
+                <p className="mb-4 text-gray-700">Um projeto elétrico finalizado deve conter um quadro de cargas e esquemas unifilares.</p>
+
+                <h3 className="text-xl font-semibold mb-3 text-gray-800">Quadro de Cargas Gerado:</h3>
+                <div className="overflow-x-auto" dangerouslySetInnerHTML={{ __html: projectData.generatedDocuments.loadTable }}></div>
+
+                <h3 className="text-xl font-semibold mt-6 mb-3 text-gray-800">Diagramas:</h3>
+                <p className="mb-4 text-gray-700">
+                  O aplicativo não gera diagramas unifilares ou detalhes de montagem visuais. Em um projeto real, estes seriam representações gráficas simplificadas das ligações elétricas, essenciais para a execução.
+                </p>
+                <p className="text-gray-700">
+                  Você pode usar a informação do quadro de cargas para criar seus próprios diagramas ou fornecer a um profissional.
+                </p>
+              </div>
+            );
+          };
+
+          // Step 14: Especificação e Orçamento de Materiais
+          const Step14Materiais = () => {
+            React.useEffect(() => {
+              // Simple material list generation
+              let materials = {};
+
+              // Conductors
+              projectData.circuits.forEach(circuit => {
+                const section = circuit.suggestedConductorSection;
+                const voltage = circuit.voltage;
+                const numConductors = circuit.numConductors; // Simplified count
+
+                // Estimate length (very rough, assume 10m per circuit for demo)
+                const estimatedLength = 15; // meters per circuit
+
+                if (section) {
+                  // Fase
+                  const phaseKey = `Cabo Flexível ${section}mm² - Fase (Preto/Vermelho/Amarelo)`;
+                  materials[phaseKey] = (materials[phaseKey] || 0) + (numConductors > 1 ? (numConductors - 1) : 1) * estimatedLength; // 1 or 2 phases
+                  // Neutro
+                  if (voltage === 127) { // Only for 127V circuits
+                    const neutralKey = `Cabo Flexível ${section}mm² - Neutro (Azul Claro)`;
+                    materials[neutralKey] = (materials[neutralKey] || 0) + estimatedLength;
+                  }
+                  // Terra
+                  const earthKey = `Cabo Flexível ${section}mm² - Terra (Verde/Verde-Amarelo)`;
+                  materials[earthKey] = (materials[earthKey] || 0) + estimatedLength;
+                }
+              });
+
+              // Breakers
+              projectData.circuits.forEach(circuit => {
+                const breakerKey = `Disjuntor ${circuit.suggestedBreaker}A - ${circuit.voltage === 127 ? 'Monopolar' : 'Bipolar'}`;
+                materials[breakerKey] = (materials[breakerKey] || 0) + 1;
+              });
+
+              // DRs
+              projectData.circuits.forEach(circuit => {
+                if (circuit.hasDR) {
+                  const drKey = `Dispositivo Diferencial-Residual (DR) 30mA`;
+                  materials[drKey] = (materials[drKey] || 0) + 1;
+                }
+              });
+
+              // DPS
+              if (projectData.protectionDetails.includeDPS) {
+                const dpsKey = `Dispositivo de Proteção contra Surtos (DPS)`;
+                materials[dpsKey] = (materials[dpsKey] || 0) + 1; // Assuming one for main panel
+              }
+
+              // Eletrodutos (very rough estimation based on circuits)
+              const totalEletrodutoLength = projectData.circuits.length * 10; // 10m per circuit average
+              const eletrodutoKey = `Eletroduto Rígido PVC ${projectData.circuits[0]?.suggestedEletrodutoDiameter || 'N/A'}`; // Simplistic, assumes one size
+              if (projectData.circuits.length > 0) {
+                materials[eletrodutoKey] = (materials[eletrodutoKey] || 0) + totalEletrodutoLength;
+              }
+
+              // Other basic items (simplified)
+              materials['Caixa de Passagem 4x2'] = (materials['Caixa de Passagem 4x2'] || 0) + projectData.rooms.length * 2;
+              materials['Caixa de Passagem 4x4'] = (materials['Caixa de Passagem 4x4'] || 0) + projectData.rooms.length * 1;
+              materials['Quadro de Distribuição (QD) para 12 disjuntores'] = 1;
+              materials['Tomadas 2P+T (10A)'] = (materials['Tomadas 2P+T (10A)'] || 0) + projectData.rooms.reduce((acc, room) => acc + (room.tugs.userQuantity || 0), 0);
+              materials['Interruptores Simples'] = (materials['Interruptores Simples'] || 0) + projectData.rooms.reduce((acc, room) => acc + (room.iluminacao.points || 0), 0);
+              materials['Placas para Tomadas/Interruptores'] = (materials['Placas para Tomadas/Interruptores'] || 0) + (materials['Tomadas 2P+T (10A)'] || 0) + (materials['Interruptores Simples'] || 0);
+              materials['Lâmpadas LED'] = (materials['Lâmpadas LED'] || 0) + projectData.rooms.reduce((acc, room) => acc + (room.iluminacao.points || 0), 0);
+
+              let materialListContent = `
+                <h3 class="text-xl font-bold mb-2">Lista de Materiais (Estimativa)</h3>
+                <table class="min-w-full bg-white border border-gray-300 rounded-lg">
+                  <thead>
+                    <tr>
+                      <th class="py-2 px-4 border-b">Item</th>
+                      <th class="py-2 px-4 border-b">Quantidade</th>
+                      <th class="py-2 px-4 border-b">Unidade</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+              `;
+
+              for (const item in materials) {
+                let unit = 'un';
+                if (item.includes('Cabo')) unit = 'm';
+                if (item.includes('Eletroduto')) unit = 'm';
+                materialListContent += `
+                  <tr>
+                    <td class="py-2 px-4 border-b">${item}</td>
+                    <td class="py-2 px-4 border-b">${materials[item].toFixed(0)}</td>
+                    <td class="py-2 px-4 border-b">${unit}</td>
+                  </tr>
+                `;
+              }
+              materialListContent += `
+                  </tbody>
+                </table>
+                <p class="mt-4 text-sm text-gray-600">
+                  Nota: Esta é uma lista de materiais simplificada e uma estimativa de quantidades. Um orçamento detalhado deve ser feito por um profissional, considerando as especificidades do projeto e os preços de mercado.
+                </p>
+              `;
+
+              setProjectData(prev => ({
+                ...prev,
+                generatedDocuments: {
+                  ...prev.generatedDocuments,
+                  materialList: materialListContent
+                }
+              }));
+            }, [projectData.circuits, projectData.rooms, projectData.tues, projectData.protectionDetails]);
+
+            return (
+              <div className="p-6 bg-white rounded-lg shadow-md">
+                <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 14: Especificação e Orçamento de Materiais</h2>
+                <p className="mb-4 text-gray-700">Aqui você encontrará uma estimativa dos materiais necessários para a sua instalação.</p>
+
+                <div className="overflow-x-auto" dangerouslySetInnerHTML={{ __html: projectData.generatedDocuments.materialList }}></div>
+              </div>
+            );
+          };
+
+          // Step 15: Elaboração do Manual do Proprietário
+          const Step15ManualProprietario = () => {
+            React.useEffect(() => {
+              let manualContent = `
+                <h3 class="text-xl font-bold mb-2">Manual do Proprietário da Instalação Elétrica</h3>
+                <p class="mb-4 text-gray-700">Este manual contém informações importantes sobre a instalação elétrica de sua residência. Leia com atenção para garantir a segurança e o bom funcionamento.</p>
+
+                <h4 class="text-lg font-semibold mb-2">1. Quadro de Distribuição (QD)</h4>
+                <p class="mb-2 text-gray-700">O Quadro de Distribuição (QD) é o "coração" da sua instalação elétrica. Ele contém os disjuntores que protegem os circuitos.</p>
+                <p class="mb-2 text-gray-700">Abaixo, um resumo dos seus circuitos:</p>
+                <ul class="list-disc list-inside mb-4 text-gray-700">
+              `;
+              projectData.circuits.forEach(circuit => {
+                manualContent += `<li><strong>${circuit.name}:</strong> Atende ${circuit.loads.map(l => l.name).join(', ')}. Potência máxima recomendada: ${circuit.totalVA} VA. Disjuntor de ${circuit.suggestedBreaker}A. ${circuit.hasDR ? 'Possui proteção DR.' : ''}</li>`;
+              });
+              manualContent += `
+                </ul>
+                <p class="mb-4 text-red-600 font-bold">
+                  Advertência Importante: NUNCA troque seus disjuntores por outros de maior corrente (amperagem) sem antes consultar um profissional qualificado e, se necessário, trocar os fios elétricos por outros de maior seção (bitola). Isso pode causar sobrecarga e risco de incêndio.
+                </p>
+
+                <h4 class="text-lg font-semibold mb-2">2. Dispositivos de Corrente Diferencial-Residual (DRs)</h4>
+                <p class="mb-2 text-gray-700">Os dispositivos DR protegem você e sua família contra choques elétricos e previnem incêndios causados por fugas de corrente.</p>
+                <p class="mb-4 text-red-600 font-bold">
+                  Advertência Importante: NUNCA desative ou remova o dispositivo DR, mesmo em caso de desligamentos sem causa aparente. Isso elimina uma medida protetora contra choques elétricos e coloca a vida dos usuários em risco. Em caso de desligamentos frequentes do DR, procure um eletricista qualificado para investigar a causa.
+                </p>
+
+                <h4 class="text-lg font-semibold mb-2">3. Aterramento (Fio Terra)</h4>
+                <p class="mb-4 text-gray-700">Sua instalação possui sistema de aterramento (fio terra), essencial para a segurança. Ele garante que em caso de falha, a corrente seja desviada para o solo, protegendo pessoas e equipamentos.</p>
+
+                <h4 class="text-lg font-semibold mb-2">4. Futuras Ampliações</h4>
+                <p class="mb-4 text-gray-700">
+                  Qualquer acréscimo de carga (novos equipamentos de alta potência, muitas tomadas, etc.) além do previsto no projeto exigirá a substituição da fiação de alimentação e, possivelmente, um pedido de aumento de carga à concessionária de energia. Sempre consulte um profissional antes de realizar modificações.
+                </p>
+
+                <h4 class="text-lg font-semibold mb-2">5. Contato Profissional</h4>
+                <p class="mb-4 text-gray-700">
+                  Para qualquer dúvida, manutenção ou modificação na sua instalação elétrica, sempre procure um eletricista qualificado ou engenheiro eletricista. A segurança da sua família e do seu patrimônio depende de uma instalação elétrica bem projetada e executada por profissionais.
+                </p>
+              `;
+
+              setProjectData(prev => ({
+                ...prev,
+                generatedDocuments: {
+                  ...prev.generatedDocuments,
+                  ownerManual: manualContent
+                }
+              }));
+            }, [projectData.circuits]);
+
+            return (
+              <div className="p-6 bg-white rounded-lg shadow-md">
+                <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 15: Elaboração do Manual do Proprietário</h2>
+                <p className="mb-4 text-gray-700">Este manual, em linguagem simples, contém informações importantes para os moradores.</p>
+
+                <div className="overflow-y-auto max-h-96 border border-gray-300 p-4 rounded-lg bg-gray-50" dangerouslySetInnerHTML={{ __html: projectData.generatedDocuments.ownerManual }}></div>
+              </div>
+            );
+          };
+
+          // Step 16: Verificação e Inspeção Final
+          const Step16Verificacao = () => (
+            <div className="p-6 bg-white rounded-lg shadow-md">
+              <h2 className="text-2xl font-bold mb-4 text-gray-800">Passo 16: Verificação e Inspeção Final</h2>
+              <p className="mb-4 text-gray-700">Antes de colocar em serviço, a instalação elétrica deve ser inspecionada e ensaiada conforme as prescrições da NBR 5410.</p>
+              <p className="mb-4 text-gray-700 font-bold">
+                Lembre-se que, para a execução e verificação final da instalação, é fundamental contar com o trabalho de pessoas qualificadas (eletricistas, engenheiros eletricistas). Este aplicativo é uma ferramenta de auxílio, mas a responsabilidade técnica é de um profissional.
+              </p>
+              <p className="text-gray-700">
+                Parabéns por completar as etapas do seu projeto elétrico residencial!
+              </p>
+            </div>
+          );
+
+          const steps = [
+            { title: "Planta Baixa", component: <Step1PlantaBaixa /> },
+            { title: "Cargas de Iluminação", component: <Step2Iluminacao /> },
+            { title: "Cargas de TUGs", component: <Step3TUGs /> },
+            { title: "Cargas de TUEs", component: <Step4TUEs /> },
+            { title: "Divisão em Circuitos", component: <Step5Circuitos /> },
+            { title: "Marcação e Eletrodutos (Conceitual)", component: <Step6MarcacaoEletrodutos /> },
+            { title: "Representação Condutores (Conceitual)", component: <Step7RepresentacaoCondutores /> },
+            { title: "Dimensionamento Condutores", component: <Step8DimensionamentoCondutores /> },
+            { title: "Dimensionamento Eletrodutos", component: <Step9DimensionamentoEletrodutos /> },
+            { title: "Dispositivos de Proteção", component: <Step10DispositivosProtecao /> },
+            { title: "Aterramento (Conceitual)", component: <Step11Aterramento /> },
+            { title: "Tipo de Fornecimento", component: <Step12Fornecimento /> },
+            { title: "Quadro de Cargas e Diagramas", component: <Step13QuadroDiagramas /> },
+            { title: "Especificação de Materiais", component: <Step14Materiais /> },
+            { title: "Manual do Proprietário", component: <Step15ManualProprietario /> },
+            { title: "Verificação Final", component: <Step16Verificacao /> },
+          ];
+
+          return (
+            <div className="min-h-screen bg-gray-100 p-4 font-sans flex items-center justify-center">
+              <div className="bg-white rounded-xl shadow-lg p-8 max-w-3xl w-full">
+                <h1 className="text-3xl font-extrabold text-center text-blue-700 mb-6">
+                  Guia de Projeto Elétrico Residencial
+                </h1>
+
+                <div className="mb-6">
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-xl font-bold text-gray-800">
+                      Passo {currentStep + 1}: {steps[currentStep].title}
+                    </h2>
+                    <div className="text-gray-600">
+                      {currentStep + 1} de {steps.length}
+                    </div>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2.5">
+                    <div
+                      className="bg-blue-600 h-2.5 rounded-full"
+                      style={{ width: `${((currentStep + 1) / steps.length) * 100}%` }}
+                    ></div>
+                  </div>
+                </div>
+
+                <div className="mb-8">
+                  {steps[currentStep].component}
+                </div>
+
+                <div className="flex justify-between mt-6">
+                  <button
+                    onClick={goToPrevStep}
+                    disabled={currentStep === 0}
+                    className={`px-6 py-3 rounded-full font-semibold transition duration-300 ${
+                      currentStep === 0
+                        ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                        : 'bg-blue-500 hover:bg-blue-600 text-white shadow-md'
+                    }`}
+                  >
+                    Passo Anterior
+                  </button>
+                  <button
+                    onClick={goToNextStep}
+                    disabled={currentStep === steps.length - 1 || (currentStep === 0 && projectData.plantaBaixa.hasPlanta === null)}
+                    className={`px-6 py-3 rounded-full font-semibold transition duration-300 ${
+                      currentStep === steps.length - 1 || (currentStep === 0 && projectData.plantaBaixa.hasPlanta === null)
+                        ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                        : 'bg-green-500 hover:bg-green-600 text-white shadow-md'
+                    }`}
+                  >
+                    {currentStep === steps.length - 1 ? 'Finalizar' : 'Próximo Passo'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        };
+
+        // Render the App component
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
